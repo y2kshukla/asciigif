@@ -35,6 +35,7 @@ declare module "gifenc" {
         delay?: number;
         transparent?: boolean;
         transparentIndex?: number;
+        dispose?: number;
       },
     ): void;
     finish(): void;

@@ -36,6 +36,7 @@ const RAMP_PRESETS: RampPreset[] = [
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_PIXELS = 900 * 900;
 const MAX_FRAMES = 240;
+const RESTORE_TO_BACKGROUND_DISPOSAL = 2;
 
 function clampDelay(delay: number | undefined) {
   if (!delay || Number.isNaN(delay)) {
@@ -259,6 +260,7 @@ function encodeAsciiGif(frames: RenderedFrame[], preserveTransparency: boolean) 
       delay: frame.delay,
       transparent: preserveTransparency,
       transparentIndex,
+      dispose: preserveTransparency ? RESTORE_TO_BACKGROUND_DISPOSAL : undefined,
     });
   });
 
