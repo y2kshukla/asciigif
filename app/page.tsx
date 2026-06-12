@@ -270,7 +270,12 @@ function encodeAsciiGif(frames: RenderedFrame[], preserveTransparency: boolean) 
   });
 
   encoder.finish();
-  return new Blob([encoder.bytes()], { type: "image/gif" });
+
+  const gifBytes = encoder.bytes();
+  const gifBuffer = new ArrayBuffer(gifBytes.byteLength);
+  new Uint8Array(gifBuffer).set(gifBytes);
+
+  return new Blob([gifBuffer], { type: "image/gif" });
 }
 
 function downloadBlob(blob: Blob, fileName: string) {
