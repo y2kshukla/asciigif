@@ -111,7 +111,11 @@ async function decodeGif(file: File): Promise<DecodedFrame[]> {
 
     patchCanvas.width = frameWidth;
     patchCanvas.height = frameHeight;
-    patchContext.putImageData(new ImageData(frame.patch, frameWidth, frameHeight), 0, 0);
+
+    // Copy gifuct-js output into an ArrayBuffer-backed typed array for ImageData.
+    const patchPixels = new Uint8ClampedArray(frame.patch);
+
+    patchContext.putImageData(new ImageData(patchPixels, frameWidth, frameHeight), 0, 0);
     workingContext.drawImage(patchCanvas, left, top);
 
     decodedFrames.push({
