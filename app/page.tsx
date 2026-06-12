@@ -37,6 +37,7 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_PIXELS = 900 * 900;
 const MAX_FRAMES = 240;
 const RESTORE_TO_BACKGROUND_DISPOSAL = 2;
+const GITHUB_URL = "https://github.com/y2kshukla/asciigif";
 
 function clampDelay(delay: number | undefined) {
   if (!delay || Number.isNaN(delay)) {
@@ -465,7 +466,30 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6 lg:px-8">
-        <header className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-6 shadow-2xl shadow-cyan-950/30 backdrop-blur md:p-10">
+        <nav className="flex flex-col gap-4 rounded-full border border-white/10 bg-white/[0.06] px-5 py-4 shadow-2xl shadow-cyan-950/20 backdrop-blur sm:flex-row sm:items-center sm:justify-between sm:px-6" aria-label="Primary navigation">
+          <a className="flex items-center gap-3 text-white" href="#top" aria-label="ASCII GIF home">
+            <span className="flex size-10 items-center justify-center rounded-full bg-cyan-300 text-lg font-black text-slate-950 shadow-lg shadow-cyan-950/30">AG</span>
+            <span>
+              <span className="block text-sm font-black uppercase tracking-[0.28em] text-cyan-200">ASCII GIF</span>
+              <span className="block text-xs text-slate-400">Browser-based GIF converter</span>
+            </span>
+          </a>
+          <div className="flex flex-wrap items-center gap-3 text-sm font-semibold text-slate-300">
+            <a className="rounded-full px-4 py-2 transition hover:bg-white/10 hover:text-white" href="#preview">Preview</a>
+            <a className="rounded-full px-4 py-2 transition hover:bg-white/10 hover:text-white" href="#controls">Controls</a>
+            <a
+              className="inline-flex items-center gap-2 rounded-full border border-cyan-300/60 bg-cyan-300/10 px-4 py-2 font-bold text-cyan-100 transition hover:border-cyan-200 hover:bg-cyan-300/20"
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span aria-hidden="true">★</span>
+              GitHub
+            </a>
+          </div>
+        </nav>
+
+        <header id="top" className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-6 shadow-2xl shadow-cyan-950/30 backdrop-blur md:p-10">
           <p className="text-sm font-semibold uppercase tracking-[0.35em] text-cyan-300">GIF to ASCII GIF</p>
           <div className="mt-4 grid gap-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
             <div>
@@ -490,7 +514,7 @@ export default function Home() {
         </header>
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
-          <section className="overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/80 shadow-2xl shadow-black/30">
+          <section id="preview" className="scroll-mt-8 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/80 shadow-2xl shadow-black/30">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
               <div>
                 <h2 className="text-xl font-bold text-white">Live preview</h2>
@@ -522,7 +546,7 @@ export default function Home() {
             </div>
           </section>
 
-          <aside className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-5 shadow-2xl shadow-black/20 backdrop-blur">
+          <aside id="controls" className="scroll-mt-8 rounded-[2rem] border border-white/10 bg-white/[0.06] p-5 shadow-2xl shadow-black/20 backdrop-blur">
             <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
               <p className={`text-sm leading-6 ${status === "error" ? "text-rose-200" : "text-slate-300"}`}>{message}</p>
               {fileName ? <p className="mt-2 truncate text-xs text-slate-500">File: {fileName}</p> : null}
