@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, DragEvent } from "react";
 import { applyPalette, GIFEncoder, quantize } from "gifenc";
 import { decompressFrames, parseGIF } from "gifuct-js";
 
@@ -13,14 +13,30 @@ type DecodedFrame = {
 type RenderedFrame = {
   delay: number;
   canvas: HTMLCanvasElement;
+  text: string;
 };
 
 type StatusKind = "idle" | "working" | "ready" | "error";
+type BackgroundMode = "solid" | "transparent";
+
+type RampPreset = {
+  label: string;
+  value: string;
+};
 
 const DEFAULT_RAMP = "@%#*+=-:. ";
+const RAMP_PRESETS: RampPreset[] = [
+  { label: "Classic", value: DEFAULT_RAMP },
+  { label: "Blocks", value: "█▓▒░ " },
+  { label: "Detailed", value: "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. " },
+  { label: "Minimal", value: "#*:. " },
+  { label: "Binary", value: "10 " },
+  { label: "Custom", value: "" },
+];
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_PIXELS = 900 * 900;
 const MAX_FRAMES = 240;
+const RESTORE_TO_BACKGROUND_DISPOSAL = 2;
 
 function clampDelay(delay: number | undefined) {
   if (!delay || Number.isNaN(delay)) {
@@ -45,6 +61,10 @@ function getContext(canvas: HTMLCanvasElement, willReadFrequently = false) {
   }
 
   return context;
+}
+
+function getBaseName(fileName: string) {
+  return fileName.replace(/\.gif$/i, "") || "ascii-animation";
 }
 
 async function decodeGif(file: File): Promise<DecodedFrame[]> {
@@ -116,6 +136,7 @@ function renderAsciiFrames(
   colorMode: boolean,
   foreground: string,
   background: string,
+  backgroundMode: BackgroundMode,
 ): RenderedFrame[] {
   if (!frames.length) {
     return [];
@@ -144,18 +165,27 @@ function renderAsciiFrames(
     const pixels = sampleContext.getImageData(0, 0, columns, rows).data;
     const outputCanvas = getCanvas(outputWidth, outputHeight);
     const outputContext = getContext(outputCanvas);
+    const textRows: string[] = [];
 
-    outputContext.fillStyle = background;
-    outputContext.fillRect(0, 0, outputWidth, outputHeight);
+    if (backgroundMode === "solid") {
+      outputContext.fillStyle = background;
+      outputContext.fillRect(0, 0, outputWidth, outputHeight);
+    } else {
+      outputContext.clearRect(0, 0, outputWidth, outputHeight);
+    }
+
     outputContext.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace`;
     outputContext.textBaseline = "top";
 
     for (let y = 0; y < rows; y += 1) {
+      let textRow = "";
+
       for (let x = 0; x < columns; x += 1) {
         const pixelIndex = (y * columns + x) * 4;
         const alpha = pixels[pixelIndex + 3] / 255;
 
         if (alpha < 0.05) {
+          textRow += " ";
           continue;
         }
 
@@ -169,19 +199,23 @@ function renderAsciiFrames(
         );
         const character = safeRamp[rampIndex];
 
-        outputContext.fillStyle = colorMode ? `rgb(${red}, ${green}, ${blue})` : foreground;
+        textRow += character;
+        outputContext.fillStyle = colorMode ? `rgba(${red}, ${green}, ${blue}, ${alpha})` : foreground;
         outputContext.fillText(character, x * charWidth, y * lineHeight);
       }
+
+      textRows.push(textRow);
     }
 
     return {
       delay: frame.delay,
       canvas: outputCanvas,
+      text: textRows.join("\n"),
     };
   });
 }
 
-function encodeAsciiGif(frames: RenderedFrame[]) {
+function encodeAsciiGif(frames: RenderedFrame[], preserveTransparency: boolean) {
   if (!frames.length) {
     throw new Error("There are no ASCII frames to export yet.");
   }
@@ -197,16 +231,53 @@ function encodeAsciiGif(frames: RenderedFrame[]) {
     readContext.drawImage(frame.canvas, 0, 0);
 
     const rgba = readContext.getImageData(0, 0, width, height).data;
+
+    if (preserveTransparency) {
+      for (let index = 0; index < rgba.length; index += 4) {
+        if (rgba[index + 3] < 8) {
+          rgba[index] = 255;
+          rgba[index + 1] = 0;
+          rgba[index + 2] = 255;
+          rgba[index + 3] = 255;
+        }
+      }
+    }
+
     const palette = quantize(rgba, 256);
     const indexed = applyPalette(rgba, palette);
+    const transparentIndex = preserveTransparency
+      ? palette.reduce((closestIndex, color, index) => {
+          const closest = palette[closestIndex];
+          const closestDistance = (closest[0] - 255) ** 2 + closest[1] ** 2 + (closest[2] - 255) ** 2;
+          const distance = (color[0] - 255) ** 2 + color[1] ** 2 + (color[2] - 255) ** 2;
+
+          return distance < closestDistance ? index : closestIndex;
+        }, 0)
+      : undefined;
+
     encoder.writeFrame(indexed, width, height, {
       palette,
       delay: frame.delay,
+      transparent: preserveTransparency,
+      transparentIndex,
+      dispose: preserveTransparency ? RESTORE_TO_BACKGROUND_DISPOSAL : undefined,
     });
   });
 
   encoder.finish();
   return new Blob([encoder.bytes()], { type: "image/gif" });
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export default function Home() {
@@ -215,26 +286,24 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const [columns, setColumns] = useState(90);
   const [fontSize, setFontSize] = useState(8);
+  const [rampPreset, setRampPreset] = useState(RAMP_PRESETS[0].label);
   const [ramp, setRamp] = useState(DEFAULT_RAMP);
   const [colorMode, setColorMode] = useState(false);
   const [foreground, setForeground] = useState("#f8fafc");
   const [background, setBackground] = useState("#020617");
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>("solid");
   const [status, setStatus] = useState<StatusKind>("idle");
   const [message, setMessage] = useState("Upload a GIF to turn it into animated ASCII art.");
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingText, setIsExportingText] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const renderedFrames = useMemo(
-    () => renderAsciiFrames(decodedFrames, columns, fontSize, ramp, colorMode, foreground, background),
-    [background, colorMode, columns, decodedFrames, fontSize, foreground, ramp],
+    () => renderAsciiFrames(decodedFrames, columns, fontSize, ramp, colorMode, foreground, background, backgroundMode),
+    [background, backgroundMode, colorMode, columns, decodedFrames, fontSize, foreground, ramp],
   );
 
-  const handleFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-
-    if (!file) {
-      return;
-    }
-
+  const handleFile = useCallback(async (file: File) => {
     setStatus("working");
     setMessage("Reading GIF frames…");
     setFileName(file.name);
@@ -249,9 +318,57 @@ export default function Home() {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "Something went wrong while reading the GIF.");
       setFileName("");
-    } finally {
-      event.target.value = "";
     }
+  }, []);
+
+  const handleFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    if (file) {
+      await handleFile(file);
+    }
+
+    event.target.value = "";
+  }, [handleFile]);
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLLabelElement>) => {
+    const nextTarget = event.relatedTarget;
+
+    if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(async (event: DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+
+    const file = event.dataTransfer.files?.[0];
+
+    if (file) {
+      await handleFile(file);
+    }
+  }, [handleFile]);
+
+  const handleRampPresetChange = useCallback((value: string) => {
+    setRampPreset(value);
+
+    const preset = RAMP_PRESETS.find((item) => item.label === value);
+
+    if (preset && preset.value) {
+      setRamp(preset.value);
+    }
+  }, []);
+
+  const handleRampChange = useCallback((value: string) => {
+    setRamp(value);
+    setRampPreset("Custom");
   }, []);
 
   const handleExport = useCallback(async () => {
@@ -260,17 +377,10 @@ export default function Home() {
 
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 20));
-      const blob = encodeAsciiGif(renderedFrames);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      const baseName = fileName.replace(/\.gif$/i, "") || "ascii-animation";
+      const blob = encodeAsciiGif(renderedFrames, backgroundMode === "transparent");
+      const baseName = getBaseName(fileName);
 
-      link.href = url;
-      link.download = `${baseName}-ascii.gif`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `${baseName}-ascii.gif`);
       setStatus("ready");
       setMessage("Export complete. Your download should start automatically.");
     } catch (error) {
@@ -278,6 +388,37 @@ export default function Home() {
       setMessage(error instanceof Error ? error.message : "Unable to export this GIF.");
     } finally {
       setIsExporting(false);
+    }
+  }, [backgroundMode, fileName, renderedFrames]);
+
+  const handleTextExport = useCallback(async () => {
+    setIsExportingText(true);
+    setMessage("Preparing text frames…");
+
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+      const baseName = getBaseName(fileName);
+      const frameDigits = String(renderedFrames.length).length;
+
+      renderedFrames.forEach((frame, index) => {
+        const frameNumber = String(index + 1).padStart(frameDigits, "0");
+        const contents = [
+          `Frame ${index + 1} of ${renderedFrames.length}`,
+          `Delay: ${frame.delay}ms`,
+          "",
+          frame.text,
+        ].join("\n");
+
+        downloadBlob(new Blob([contents], { type: "text/plain;charset=utf-8" }), `${baseName}-frame-${frameNumber}.txt`);
+      });
+
+      setStatus("ready");
+      setMessage(`Exported ${renderedFrames.length} text frame${renderedFrames.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "Unable to export the text frames.");
+    } finally {
+      setIsExportingText(false);
     }
   }, [fileName, renderedFrames]);
 
@@ -319,6 +460,7 @@ export default function Home() {
   const frameSummary = decodedFrames.length
     ? `${decodedFrames.length} frame${decodedFrames.length === 1 ? "" : "s"} · ${renderedFrames[0]?.canvas.width ?? 0}×${renderedFrames[0]?.canvas.height ?? 0}px output`
     : "No GIF loaded yet";
+  const canExport = Boolean(renderedFrames.length) && !isExporting && !isExportingText && status !== "working";
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
@@ -331,12 +473,17 @@ export default function Home() {
                 Make animated ASCII art in your browser.
               </h1>
               <p className="mt-4 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
-                Upload a GIF, adjust the resolution, colors, and character ramp, then download a new animated GIF with the original timing preserved.
+                Upload or drag in a GIF, adjust the resolution, colors, transparency, and character ramp, then export an animated GIF or per-frame text files.
               </p>
             </div>
-            <label className="group flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-cyan-300/60 bg-cyan-300/10 px-6 py-8 text-center transition hover:border-cyan-200 hover:bg-cyan-300/15">
-              <span className="text-lg font-bold text-white">Upload GIF</span>
-              <span className="mt-2 text-sm text-slate-300">Choose a .gif under 20 MB</span>
+            <label
+              className={`group flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed px-6 py-8 text-center transition ${isDragging ? "border-cyan-100 bg-cyan-300/25" : "border-cyan-300/60 bg-cyan-300/10 hover:border-cyan-200 hover:bg-cyan-300/15"}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              <span className="text-lg font-bold text-white">Upload or drop GIF</span>
+              <span className="mt-2 text-sm text-slate-300">Choose or drag a .gif under 20 MB</span>
               <input className="sr-only" type="file" accept="image/gif,.gif" onChange={handleFileChange} />
             </label>
           </div>
@@ -364,12 +511,12 @@ export default function Home() {
             </div>
             <div className="flex min-h-[420px] items-center justify-center bg-[radial-gradient(circle_at_top,#164e63,transparent_35%),#020617] p-4 sm:p-8">
               {renderedFrames.length ? (
-                <canvas ref={previewCanvasRef} className="max-h-[70vh] max-w-full rounded-xl border border-white/10 bg-black shadow-2xl" />
+                <canvas ref={previewCanvasRef} className="max-h-[70vh] max-w-full rounded-xl border border-white/10 bg-[conic-gradient(#1e293b_25%,#0f172a_0_50%,#1e293b_0_75%,#0f172a_0)] bg-[length:24px_24px] shadow-2xl" />
               ) : (
                 <div className="max-w-md rounded-3xl border border-white/10 bg-white/[0.06] p-8 text-center">
                   <div className="mx-auto mb-4 flex size-16 items-center justify-center rounded-2xl bg-cyan-300/15 text-3xl">✦</div>
                   <h2 className="text-2xl font-bold text-white">Your ASCII GIF appears here</h2>
-                  <p className="mt-3 text-slate-300">Start with the upload button, then use the beginner-friendly controls on the right.</p>
+                  <p className="mt-3 text-slate-300">Start with the upload dropzone, then use the beginner-friendly controls on the right.</p>
                 </div>
               )}
             </div>
@@ -397,16 +544,31 @@ export default function Home() {
                 <input className="mt-3 w-full accent-cyan-300" type="range" min="6" max="18" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} />
               </label>
 
-              <label className="block">
-                <span className="text-sm font-semibold text-slate-200">Character ramp</span>
-                <input
-                  className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 font-mono text-sm text-white outline-none transition focus:border-cyan-300"
-                  value={ramp}
-                  onChange={(event) => setRamp(event.target.value)}
-                  placeholder={DEFAULT_RAMP}
-                />
-                <span className="mt-1 block text-xs text-slate-500">Darkest characters first, lightest characters last.</span>
-              </label>
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-200">Character ramp preset</span>
+                  <select
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 text-sm text-white outline-none transition focus:border-cyan-300"
+                    value={rampPreset}
+                    onChange={(event) => handleRampPresetChange(event.target.value)}
+                  >
+                    {RAMP_PRESETS.map((preset) => (
+                      <option key={preset.label} value={preset.label}>{preset.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-200">Custom ramp</span>
+                  <input
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-slate-950 px-4 py-3 font-mono text-sm text-white outline-none transition focus:border-cyan-300"
+                    value={ramp}
+                    onChange={(event) => handleRampChange(event.target.value)}
+                    placeholder={DEFAULT_RAMP}
+                  />
+                  <span className="mt-1 block text-xs text-slate-500">Darkest characters first, lightest characters last. Editing this switches to Custom.</span>
+                </label>
+              </div>
 
               <label className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
                 <span>
@@ -416,25 +578,45 @@ export default function Home() {
                 <input className="size-5 accent-cyan-300" type="checkbox" checked={colorMode} onChange={(event) => setColorMode(event.target.checked)} />
               </label>
 
-              <div className="grid grid-cols-2 gap-3">
-                <label className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                  <span className="text-sm font-semibold text-slate-200">Background</span>
-                  <input className="mt-3 h-11 w-full cursor-pointer rounded-xl border border-white/10 bg-transparent" type="color" value={background} onChange={(event) => setBackground(event.target.value)} />
-                </label>
-                <label className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
-                  <span className="text-sm font-semibold text-slate-200">Foreground</span>
-                  <input className="mt-3 h-11 w-full cursor-pointer rounded-xl border border-white/10 bg-transparent disabled:cursor-not-allowed disabled:opacity-40" type="color" value={foreground} onChange={(event) => setForeground(event.target.value)} disabled={colorMode} />
-                </label>
+              <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                <span className="text-sm font-semibold text-slate-200">Background</span>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <label className={`rounded-xl border px-3 py-2 text-center text-sm font-semibold ${backgroundMode === "solid" ? "border-cyan-300 bg-cyan-300/15 text-cyan-100" : "border-white/10 text-slate-400"}`}>
+                    <input className="sr-only" type="radio" name="background-mode" checked={backgroundMode === "solid"} onChange={() => setBackgroundMode("solid")} />
+                    Solid
+                  </label>
+                  <label className={`rounded-xl border px-3 py-2 text-center text-sm font-semibold ${backgroundMode === "transparent" ? "border-cyan-300 bg-cyan-300/15 text-cyan-100" : "border-white/10 text-slate-400"}`}>
+                    <input className="sr-only" type="radio" name="background-mode" checked={backgroundMode === "transparent"} onChange={() => setBackgroundMode("transparent")} />
+                    Transparent
+                  </label>
+                </div>
+                <input className="mt-3 h-11 w-full cursor-pointer rounded-xl border border-white/10 bg-transparent disabled:cursor-not-allowed disabled:opacity-40" type="color" value={background} onChange={(event) => setBackground(event.target.value)} disabled={backgroundMode === "transparent"} />
+                <span className="mt-2 block text-xs text-slate-500">Transparent keeps empty canvas pixels clear for PNG-like compositing in supported viewers.</span>
               </div>
 
-              <button
-                className="w-full rounded-2xl bg-cyan-300 px-5 py-4 text-base font-black text-slate-950 shadow-lg shadow-cyan-950/30 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                type="button"
-                onClick={handleExport}
-                disabled={!renderedFrames.length || isExporting || status === "working"}
-              >
-                {isExporting ? "Exporting…" : "Export as GIF"}
-              </button>
+              <label className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 block">
+                <span className="text-sm font-semibold text-slate-200">Foreground</span>
+                <input className="mt-3 h-11 w-full cursor-pointer rounded-xl border border-white/10 bg-transparent disabled:cursor-not-allowed disabled:opacity-40" type="color" value={foreground} onChange={(event) => setForeground(event.target.value)} disabled={colorMode} />
+              </label>
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+                <button
+                  className="w-full rounded-2xl bg-cyan-300 px-5 py-4 text-base font-black text-slate-950 shadow-lg shadow-cyan-950/30 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                  type="button"
+                  onClick={handleExport}
+                  disabled={!canExport}
+                >
+                  {isExporting ? "Exporting…" : "Export as GIF"}
+                </button>
+                <button
+                  className="w-full rounded-2xl border border-cyan-300/60 px-5 py-4 text-base font-black text-cyan-100 transition hover:bg-cyan-300/10 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
+                  type="button"
+                  onClick={handleTextExport}
+                  disabled={!canExport}
+                >
+                  {isExportingText ? "Exporting text…" : "Export TXT frames"}
+                </button>
+              </div>
             </div>
           </aside>
         </div>
