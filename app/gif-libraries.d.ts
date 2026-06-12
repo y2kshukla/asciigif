@@ -33,6 +33,8 @@ declare module "gifenc" {
       options: {
         palette: RgbPalette;
         delay?: number;
+        transparent?: boolean;
+        transparentIndex?: number;
       },
     ): void;
     finish(): void;
